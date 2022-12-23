@@ -1,1 +1,10 @@
-# MIDDM
+# Multimodal Interpretable Data-Driven Models for Early Prediction of Antimicrobial Multidrug Resistance Using Multivariate Time-Series
+Authors: Sergio Martínez-Agüero, Antonio G. Marques, Inmaculada Mora-Jimenez, Joaquín Alvarez-Rodríguez, Cristina Soguero-Ruiz
+
+## Abstract
+Electronic health record (EHR) is an inherently multimodal register of the patients' health status characterized by static data and multivariate time series (MTS). While MTS are a valuable tool for clinical prediction, their fusion with other data modalities can possibly result in more thorough insights and more accurate results.  Deep neural networks (DNNs) have emerged as fundamental tools for identifying and defining the underlying patterns in the healthcare domain.  However, fundamental improvements in interpretability are needed for DNN models to be widely used in the clinical setting.  In this study, we present an approach built on a collection of interpretable multimodal data-driven models that may anticipate and understand the emergence of antimicrobial multidrug resistance (AMR) germs in the intensive care unit (ICU) of the University Hospital of Fuenlabrada (Madrid, Spain). The profile and initial health status of the patient are modeled using static variables, while the evolution of the patient’s health status  during the ICU stay is modeled using several MTS, including mechanical ventilation and antibiotics intake. The multimodal DNNs models proposed in this paper include interpretable principles in addition to being effective at predicting AMR and providing an explainable prediction support system for AMR in the ICU. Furthermore, our proposed methodology based on multimodal models and interpretatibility schemes can be leveraged in additional clinical problems dealing with EHR data, broadening the impact and applicability of our results.
+
+## Code Organization
+
+This repository contains the source code for the different architectures used in the presented paper, along with the training routines for the experiments using synthetic data.
+
