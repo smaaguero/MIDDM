@@ -1,0 +1,261 @@
+import warnings
+import numpy as np
+import numpy.linalg as la
+from numpy import log
+from scipy.special import digamma
+from sklearn.neighbors import BallTree, KDTree
+
+class conditional_MI:
+
+    def __init__(self):
+        pass
+
+    # DISCRETE ESTIMATORS
+    def entropy_discrete(self, sx, base=2):
+        """ Discrete entropy estimator
+            sx is a list of samples
+        """
+        unique, count = np.unique(sx, return_counts=True, axis=0)
+        # Convert to float as otherwise integer division results in all 0 for proba.
+        proba = count.astype(float) / len(sx)
+        # Avoid 0 division; remove probabilities == 0.0 (removing them does not change the entropy estimate as 0 * log(1/0) = 0.
+        proba = proba[proba > 0.0]
+        return np.sum(proba * np.log(1. / proba)) / log(base)
+
+    def centropy_dsicrete(self, x, y, base=2):
+        """ The classic K-L k-nearest neighbor continuous entropy estimator for the
+            entropy of X conditioned on Y.
+        """
+        xy = np.c_[x, y]
+        return self.entropy_discrete(xy, base) - self.entropy_discrete(y, base)
+
+    def mid_discrete(self, x, y, base=2):
+        """ Discrete mutual information estimator
+            Given a list of samples which can be any hashable object
+        """
+        assert len(x) == len(y), "Arrays should have same length"
+        return self.entropy_discrete(x, base) - self.centropy_dsicrete(x, y, base)
+
+
+    def cmid_discrete(self, x, y, z, base=2):
+        """ Discrete mutual information estimator
+            Given a list of samples which can be any hashable object
+        """
+        assert len(x) == len(y) == len(z), "Arrays should have same length"
+        xz = np.c_[x, z]
+        yz = np.c_[y, z]
+        xyz = np.c_[x, y, z]
+        return self.entropy_discrete(xz, base) + self.entropy_discrete(yz, base) - self.entropy_discrete(xyz, base) - self.entropy_discrete(z, base)
+    
+
+
+    def entropy(self, x, k=3, base=2):
+        """ The classic K-L k-nearest neighbor continuous entropy estimator
+            x should be a list of vectors, e.g. x = [[1.3], [3.7], [5.1], [2.4]]
+            if x is a one-dimensional scalar and we have four samples
+        """
+        assert k <= len(x) - 1, "Set k smaller than num. samples - 1"
+        x = np.asarray(x)
+        n_elements, n_features = x.shape
+        x = self.add_noise(x)
+        tree = self.build_tree(x)
+        nn = self.query_neighbors(tree, x, k)
+        const = digamma(n_elements) - digamma(k) + n_features * log(2)
+        return (const + n_features * np.log(nn).mean()) / log(base)
+
+
+    def centropy(self, x, y, k=3, base=2):
+        """ 
+        The classic K-L k-nearest neighbor continuous entropy estimator for the
+        entropy of X conditioned on Y.
+        """
+        xy = np.c_[x, y]
+        entropy_union_xy = self.entropy(xy, k=k, base=base)
+        entropy_y = self.entropy(y, k=k, base=base)
+        return entropy_union_xy - entropy_y
+
+
+    def tc(self, xs, k=3, base=2):
+        xs_columns = np.expand_dims(xs, axis=0).T
+        entropy_features = [self.entropy(col, k=k, base=base) for col in xs_columns]
+        return np.sum(entropy_features) - self.entropy(xs, k, base)
+
+
+    def ctc(self, xs, y, k=3, base=2):
+        xs_columns = np.expand_dims(xs, axis=0).T
+        centropy_features = [self.centropy(col, y, k=k, base=base)
+                            for col in xs_columns]
+        return np.sum(centropy_features) - self.centropy(xs, y, k, base)
+
+
+    def corex(self, xs, ys, k=3, base=2):
+        xs_columns = np.expand_dims(xs, axis=0).T
+        cmi_features = [self.mi(col, ys, k=k, base=base) for col in xs_columns]
+        return np.sum(cmi_features) - self.mi(xs, ys, k=k, base=base)
+
+
+    def mi(self, x, y, z=None, k=3, base=2, alpha=0):
+        """ 
+        Mutual information of x and y (conditioned on z if z is not None)
+        x, y should be a list of vectors, e.g. x = [[1.3], [3.7], [5.1], [2.4]]
+        if x is a one-dimensional scalar and we have four samples
+        """
+        assert len(x) == len(y), "Arrays should have same length"
+        assert k <= len(x) - 1, "Set k smaller than num. samples - 1"
+        x, y = np.asarray(x), np.asarray(y)
+        x, y = x.reshape(x.shape[0], -1), y.reshape(y.shape[0], -1)
+        x = self.add_noise(x)
+        y = self.add_noise(y)
+        points = [x, y]
+        if z is not None:
+            z = np.asarray(z)
+            z = z.reshape(z.shape[0], -1)
+            points.append(z)
+        points = np.hstack(points)
+        # Find nearest neighbors in joint space, p=inf means max-norm
+        tree = self.build_tree(points)
+        dvec = self.query_neighbors(tree, points, k)
+        if z is None:
+            a, b, c, d = self.avgdigamma(x, dvec), self.avgdigamma(
+                y, dvec), self.digamma(k), self.digamma(len(x))
+            if alpha > 0:
+                d += self.lnc_correction(tree, points, k, alpha)
+        else:
+            xz = np.c_[x, z]
+            yz = np.c_[y, z]
+            a, b, c, d = self.avgdigamma(xz, dvec), self.avgdigamma(
+                yz, dvec), self.avgdigamma(z, dvec), self.digamma(k)
+        return (-a - b + c + d) / log(base)
+
+
+    def cmi(self, x, y, z, k=3, base=2):
+        """ Mutual information of x and y, conditioned on z
+            Legacy function. Use mi(x, y, z) directly.
+        """
+        return self.mi(x, y, z=z, k=k, base=base)
+
+
+
+    def lnc_correction(self, tree, points, k, alpha):
+        e = 0
+        n_sample = points.shape[0]
+        for point in points:
+            # Find k-nearest neighbors in joint space, p=inf means max norm
+            knn = tree.query(point[None, :], k=k+1, return_distance=False)[0]
+            knn_points = points[knn]
+            # Substract mean of k-nearest neighbor points
+            knn_points = knn_points - knn_points[0]
+            # Calculate covariance matrix of k-nearest neighbor points, obtain eigen vectors
+            covr = knn_points.T @ knn_points / k
+            _, v = la.eig(covr)
+            # Calculate PCA-bounding box using eigen vectors
+            V_rect = np.log(np.abs(knn_points @ v).max(axis=0)).sum()
+            # Calculate the volume of original box
+            log_knn_dist = np.log(np.abs(knn_points).max(axis=0)).sum()
+
+            # Perform local non-uniformity checking and update correction term
+            if V_rect < log_knn_dist + np.log(alpha):
+                e += (log_knn_dist - V_rect) / n_sample
+        return e
+
+
+
+    def tcd(self, xs, base=2):
+        xs_columns = np.expand_dims(xs, axis=0).T
+        entropy_features = [self.entropyd(col, base=base) for col in xs_columns]
+        return np.sum(entropy_features) - self.entropyd(xs, base)
+
+
+    def ctcd(self, xs, y, base=2):
+        xs_columns = np.expand_dims(xs, axis=0).T
+        centropy_features = [self.centropyd(col, y, base=base) for col in xs_columns]
+        return np.sum(centropy_features) - self.centropyd(xs, y, base)
+
+
+    def corexd(self, xs, ys, base=2):
+        xs_columns = np.expand_dims(xs, axis=0).T
+        cmi_features = [self.midd(col, ys, base=base) for col in xs_columns]
+        return np.sum(cmi_features) - self.midd(xs, ys, base)
+
+
+    # MIXED ESTIMATORS
+    def micd(self, x, y, k=3, base=2, warning=True):
+        """ If x is continuous and y is discrete, compute mutual information
+        """
+        assert len(x) == len(y), "Arrays should have same length"
+        entropy_x = self.entropy(x, k, base)
+
+        y_unique, y_count = np.unique(y, return_counts=True, axis=0)
+        y_proba = y_count / len(y)
+
+        entropy_x_given_y = 0.
+        for yval, py in zip(y_unique, y_proba):
+            x_given_y = x[(y == yval).all(axis=1)]
+            if k <= len(x_given_y) - 1:
+                entropy_x_given_y += py * self.entropy(x_given_y, k, base)
+            else:
+                if warning:
+                    warnings.warn("Warning, after conditioning, on y={yval} insufficient data. "
+                                "Assuming maximal entropy in this case.".format(yval=yval))
+                entropy_x_given_y += py * entropy_x
+        return abs(entropy_x - entropy_x_given_y)  # units already applied
+
+
+    def midc(self, x, y, k=3, base=2, warning=True):
+        return self.micd(y, x, k, base, warning)
+
+
+    def centropycd(self, x, y, k=3, base=2, warning=True):
+        return self.entropy(x, base) - self.micd(x, y, k, base, warning)
+
+
+    def centropydc(self, x, y, k=3, base=2, warning=True):
+        return self.centropycd(y, x, k=k, base=base, warning=warning)
+
+
+    def ctcdc(self, xs, y, k=3, base=2, warning=True):
+        xs_columns = np.expand_dims(xs, axis=0).T
+        centropy_features = [self.centropydc(
+            col, y, k=k, base=base, warning=warning) for col in xs_columns]
+        return np.sum(centropy_features) - self.centropydc(xs, y, k, base, warning)
+
+
+    def ctccd(self, xs, y, k=3, base=2, warning=True):
+        return self.ctcdc(y, xs, k=k, base=base, warning=warning)
+
+
+    def corexcd(self, xs, ys, k=3, base=2, warning=True):
+        return self.corexdc(ys, xs, k=k, base=base, warning=warning)
+
+
+    def corexdc(self, xs, ys, k=3, base=2, warning=True):
+        return self.tcd(xs, base) - self.ctcdc(xs, ys, k, base, warning)
+
+
+    # UTILITY METHODS
+    def add_noise(self, x, intens=1e-10):
+        # small noise to break degeneracy, see doc.
+        return x + intens * np.random.random_sample(x.shape)
+
+
+    def query_neighbors(self, tree, x, k):
+        return tree.query(x, k=k + 1)[0][:, k]
+
+
+    def count_neighbors(self, tree, x, r):
+        return tree.query_radius(x, r, count_only=True)
+
+
+    def avgdigamma(self, points, dvec):
+        # This part finds number of neighbors in some radius in the marginal space
+        # returns expectation value of <psi(nx)>
+        tree = self.build_tree(points)
+        dvec = dvec - 1e-15
+        num_points = self.count_neighbors(tree, points, dvec)
+        return np.mean(self.digamma(num_points))
+
+
+    def build_tree(self, points):
+        if points.shape[1] >= 20:
+            return BallTree(points, metric='chebyshev')
+        return KDTree(points, metric='chebyshev')

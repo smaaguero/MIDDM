@@ -1,0 +1,119 @@
+import numpy as np
+import pandas as pd
+import logging
+from typing import List, Optional, Dict, Union, Tuple
+
+logging.basicConfig(level=logging.INFO)
+
+class BootstrapResampling:
+
+    def __init__(self, 
+                 df: Optional[pd.DataFrame] = None, 
+                 seed: int = 0,
+                 repetitions: int = 3000, 
+                 alpha: float = 0.05, 
+                 random_state: Union[int, np.ndarray, None] = None,
+                 div: float = 1.25,
+                 frac: float = 1.0) -> None:
+        """
+        Initializes the BootstrapResampling class.
+        
+        Parameters:
+        - df (pd.DataFrame, optional): Input DataFrame. Defaults to None.
+        - seed (int, optional): Random seed. Defaults to 0.
+        - repetitions (int, optional): Number of bootstrap repetitions. Defaults to 3000.
+        - alpha (float, optional): Significance level. Defaults to 0.05.
+        - random_state (int, np.ndarray or None, optional): Random state or array of states. Defaults to None.
+        - div (float, optional): Division factor for sample size in bootstrap_ci method. Defaults to 1.25.
+        """
+        self.df = df
+        self.seed = seed
+        self.repetitions = repetitions
+        self.alpha = alpha
+        self.random_state = random_state
+        self.div = div
+        self.frac = frac
+        
+
+    @staticmethod
+    def balance_data(self) -> pd.DataFrame:
+        """
+        Balances data in the DataFrame by sampling without replacement.
+        
+        Parameters:
+        - df (pd.DataFrame): Input DataFrame.
+        - seed (int): Random seed.
+        
+        Returns:
+        - pd.DataFrame: Balanced DataFrame.
+        """
+        df_mr = self.df[self.df.MR == 1]
+        list_patients_mr = np.unique(df_mr.Admissiondboid)
+        df_no_mr = self.df[self.df.MR == 0]
+        list_patients_no_mr = np.unique(df_no_mr.Admissiondboid)
+
+        if len(list_patients_mr) > len(list_patients_no_mr):
+            selected_indices = np.random.choice(len(list_patients_mr), len(list_patients_no_mr), replace=False)
+            selected_patients_mr = list_patients_mr[selected_indices]
+            df_mr = df_mr[df_mr.Admissiondboid.isin(selected_patients_mr)]
+        else:
+            selected_indices = np.random.choice(len(list_patients_no_mr), len(list_patients_mr), replace=False)
+            selected_patients_no_mr = list_patients_no_mr[selected_indices]
+            df_no_mr = df_no_mr[df_no_mr.Admissiondboid.isin(selected_patients_no_mr)]
+
+        df = pd.concat([df_no_mr, df_mr]).sample(frac=self.frac, random_state=self.seed).reset_index(drop=True)
+        return df
+
+    @staticmethod
+    def bootstrap_ci(df: pd.DataFrame, variable: str, div: float, classes: str, repetitions: int = 3000, alpha: float = 0.05, random_state: Union[int, np.ndarray] = np.arange(1,30000,10)) -> List[float]:
+        """
+        Conduct bootstrap confidence interval estimation.
+
+        Parameters:
+        ...
+        ... (Add your descriptions here)
+        ...
+        
+        Returns:
+        - list: Left and right confidence interval boundaries.
+        """
+        # Add further input validation and error handling as necessary
+        logging.info(f"Sample size: {int(len(df) / div)}")
+
+        df = df[[variable, classes]]
+        bootstrap_sample_size = len(df) 
+        
+        mean_diffs = []
+        #print("sample_o: ", int(bootstrap_sample_size), " sample_s: ", int(bootstrap_sample_size/2))
+        print("sample size: ", int(bootstrap_sample_size/div))
+        for i in range(repetitions):
+            # Aleatoriza las muestras disponibles
+            bootstrap_sample = df.sample(n = int(bootstrap_sample_size/div), replace = False, random_state = random_state[i])
+            # Calcula la media
+            mean_sample = bootstrap_sample.groupby("MR").sum() / bootstrap_sample.groupby("MR").count()
+            mean_diff = mean_sample.iloc[1,0] - mean_sample.iloc[0,0]
+            mean_diffs.append(mean_diff)
+
+        # confidence interval
+        left = np.percentile(mean_diffs, alpha/2*100)
+        right = np.percentile(mean_diffs, 100-alpha/2*100)
+
+
+        out = [round(left, 2), round(right, 2)]  # Replace left and right with calculated values
+        return out
+
+    @classmethod
+    def main(cls, df: pd.DataFrame, semillas: List[int]):
+        """
+        Main method to run bootstrap confidence interval estimation.
+
+        Parameters:
+        - df_aux (pd.DataFrame): Input DataFrame.
+        - semillas (list): List of random seeds.
+        """
+        params = df.columns.values[1:-1]
+        valores = np.zeros((len(params), 2))
+
+        for i, param in enumerate(params):
+            balanced_data = cls.balance_data(df, semillas[i])
+            valores[i, :] = cls.bootstrap_ci(balanced_data, param, 1.25, 'MR')
